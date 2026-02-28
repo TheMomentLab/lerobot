@@ -69,6 +69,8 @@ from pathlib import Path
 from pprint import pformat
 from typing import Any
 
+import torch
+
 from lerobot.cameras import (  # noqa: F401
     CameraConfig,  # noqa: F401
 )
@@ -179,6 +181,11 @@ class DatasetRecordConfig:
     vcodec: str = "libsvtav1"
     # Rename map for the observation to override the image and state keys
     rename_map: dict[str, str] = field(default_factory=dict)
+    # The dimension of the one-hot vector to add to the observation.
+    one_hot_dim: int | None = None
+    # The index of the one-hot vector to add to the observation.
+    # If not provided and `one_hot_dim` is set, the index will be requested via input() at the start of each episode.
+    one_hot_index: int | None = None
 
     def __post_init__(self):
         if self.single_task is None:
@@ -278,6 +285,7 @@ def record_loop(
     single_task: str | None = None,
     display_data: bool = False,
     display_compressed_images: bool = False,
+    one_hot_vector: torch.Tensor | None = None,
 ):
     if dataset is not None and dataset.fps != fps:
         raise ValueError(f"The dataset fps should be equal to requested fps ({dataset.fps} != {fps}).")
@@ -327,6 +335,14 @@ def record_loop(
 
         # Applies a pipeline to the raw robot observation, default is IdentityProcessor
         obs_processed = robot_observation_processor(obs)
+
+        # Inject one-hot vector if provided
+        if one_hot_vector is not None:
+            # Note: obs_processed items are Tensors (C, H, W) or (D,).
+            # one_hot_vector is (D,).
+            obs_processed["observation.one_hot"] = one_hot_vector
+
+
 
         if policy is not None or dataset is not None:
             observation_frame = build_dataset_frame(dataset.features, obs_processed, prefix=OBS_STR)
@@ -430,6 +446,13 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
         ),
     )
 
+    if cfg.dataset.one_hot_dim is not None:
+        dataset_features["observation.one_hot"] = {
+            "dtype": "float32",
+            "shape": (cfg.dataset.one_hot_dim,),
+            "names": [f"class_{i}" for i in range(cfg.dataset.one_hot_dim)],
+        }
+
     dataset = None
     listener = None
 
@@ -488,6 +511,26 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
         with VideoEncodingManager(dataset):
             recorded_episodes = 0
             while recorded_episodes < cfg.dataset.num_episodes and not events["stop_recording"]:
+                one_hot_vector = None
+                if cfg.dataset.one_hot_dim is not None:
+                    # Determine index for this episode
+                    if cfg.dataset.one_hot_index is not None:
+                        idx = cfg.dataset.one_hot_index
+                    else:
+                        while True:
+                            try:
+                                user_input = input(f"Enter one-hot index (0-{cfg.dataset.one_hot_dim - 1}) for episode {recorded_episodes}: ")
+                                idx = int(user_input)
+                                if 0 <= idx < cfg.dataset.one_hot_dim:
+                                    break
+                                print(f"Invalid index. Must be between 0 and {cfg.dataset.one_hot_dim - 1}.")
+                            except ValueError:
+                                print("Invalid input. Please enter an integer.")
+                    
+                    # Create one-hot vector
+                    one_hot_vector = torch.zeros(cfg.dataset.one_hot_dim, dtype=torch.float32)
+                    one_hot_vector[idx] = 1.0
+
                 log_say(f"Recording episode {dataset.num_episodes}", cfg.play_sounds)
                 record_loop(
                     robot=robot,
@@ -505,6 +548,7 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
                     single_task=cfg.dataset.single_task,
                     display_data=cfg.display_data,
                     display_compressed_images=display_compressed_images,
+                    one_hot_vector=one_hot_vector,
                 )
 
                 # Execute a few seconds without recording to give time to manually reset the environment

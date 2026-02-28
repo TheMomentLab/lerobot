@@ -314,10 +314,21 @@ class ACT(nn.Module):
             num_input_token_encoder = 1 + config.chunk_size
             if self.config.robot_state_feature:
                 num_input_token_encoder += 1
+            if self.config.one_hot_feature_key:
+                num_input_token_encoder += 1
             self.register_buffer(
                 "vae_encoder_pos_enc",
                 create_sinusoidal_pos_embedding(num_input_token_encoder, config.dim_model).unsqueeze(0),
             )
+
+        # One-hot vector projection
+        if self.config.one_hot_feature_key:
+            # Infer dimension from config.input_shapes (not available here directly, but we assume it's set correctly in config or we access it if possible)
+            # Actually config.input_shapes is available in config object.
+            # However, config is just a dataclass, it might not have input_shapes populated if not passed?
+            # ACTConfig has input_shapes field.
+            one_hot_dim = config.input_shapes[config.one_hot_feature_key][0]
+            self.one_hot_encoder_input_proj = nn.Linear(one_hot_dim, config.dim_model)
 
         # Backbone for image feature extraction.
         if self.config.image_features:
@@ -355,6 +366,8 @@ class ACT(nn.Module):
         if self.config.robot_state_feature:
             n_1d_tokens += 1
         if self.config.env_state_feature:
+            n_1d_tokens += 1
+        if self.config.one_hot_feature_key:
             n_1d_tokens += 1
         self.encoder_1d_feature_pos_embed = nn.Embedding(n_1d_tokens, config.dim_model)
         if self.config.image_features:
@@ -416,6 +429,12 @@ class ACT(nn.Module):
                 vae_encoder_input = [cls_embed, robot_state_embed, action_embed]  # (B, S+2, D)
             else:
                 vae_encoder_input = [cls_embed, action_embed]
+
+            if self.config.one_hot_feature_key:
+                one_hot_embed = self.one_hot_encoder_input_proj(batch[self.config.one_hot_feature_key])
+                one_hot_embed = one_hot_embed.unsqueeze(1) # (B, 1, D)
+                vae_encoder_input.insert(1, one_hot_embed) # Insert after cls token
+
             vae_encoder_input = torch.cat(vae_encoder_input, axis=1)
 
             # Prepare fixed positional embedding.
@@ -425,8 +444,14 @@ class ACT(nn.Module):
             # Prepare key padding mask for the transformer encoder. We have 1 or 2 extra tokens at the start of the
             # sequence depending whether we use the input states or not (cls and robot state)
             # False means not a padding token.
+            n_extra_tokens = 1 # cls token
+            if self.config.robot_state_feature:
+                n_extra_tokens += 1
+            if self.config.one_hot_feature_key:
+                n_extra_tokens += 1
+            
             cls_joint_is_pad = torch.full(
-                (batch_size, 2 if self.config.robot_state_feature else 1),
+                (batch_size, n_extra_tokens),
                 False,
                 device=batch[OBS_STATE].device,
             )
@@ -464,6 +489,9 @@ class ACT(nn.Module):
         # Environment state token.
         if self.config.env_state_feature:
             encoder_in_tokens.append(self.encoder_env_state_input_proj(batch[OBS_ENV_STATE]))
+        # One-hot token
+        if self.config.one_hot_feature_key:
+            encoder_in_tokens.append(self.one_hot_encoder_input_proj(batch[self.config.one_hot_feature_key]))
 
         if self.config.image_features:
             # For a list of images, the H and W may vary but H*W is constant.

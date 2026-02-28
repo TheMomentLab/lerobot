@@ -131,6 +131,10 @@ class ACTConfig(PreTrainedConfig):
     # Training and loss computation.
     dropout: float = 0.1
     kl_weight: float = 10.0
+    # Add a one-hot vector to the policy input.
+    # The key must be present in the observation dictionary.
+    # The dimension of the vector is inferred from the input shapes.
+    one_hot_feature_key: str | None = None
 
     # Training preset
     optimizer_lr: float = 1e-5

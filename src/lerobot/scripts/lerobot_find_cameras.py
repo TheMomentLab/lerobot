@@ -163,11 +163,62 @@ def create_camera_instance(cam_meta: dict[str, Any]) -> dict[str, Any] | None:
 
     try:
         if cam_type == "OpenCV":
-            cv_config = OpenCVCameraConfig(
-                index_or_path=cam_id,
-                color_mode=ColorMode.RGB,
+            # Some USB UVC cameras are much more stable with MJPG, especially when
+            # several cameras are opened at once.
+            connect_attempts = [
+                {"name": "MJPG preferred", "fourcc": "MJPG"},
+                {"name": "default", "fourcc": None},
+            ]
+            last_error: Exception | None = None
+            for idx, attempt in enumerate(connect_attempts, start=1):
+                cv_config = OpenCVCameraConfig(
+                    index_or_path=cam_id,
+                    color_mode=ColorMode.RGB,
+                    warmup_s=0,
+                    fourcc=attempt["fourcc"],
+                )
+                instance = OpenCVCamera(cv_config)
+                try:
+                    logger.info(
+                        f"Connecting to {cam_type} camera: {cam_id} "
+                        f"(attempt {idx}/{len(connect_attempts)}: {attempt['name']})..."
+                    )
+                    instance.connect(warmup=False)
+                    # Probe a few frames right after connect. If read is unstable here,
+                    # switch to the next connect attempt (e.g. default <-> MJPG).
+                    probe_ok = False
+                    probe_attempts = 6
+                    for probe_idx in range(1, probe_attempts + 1):
+                        try:
+                            instance.read()
+                            probe_ok = True
+                            break
+                        except RuntimeError as e:
+                            last_error = e
+                            if probe_idx == probe_attempts:
+                                break
+                            time.sleep(0.05)
+                    if not probe_ok:
+                        raise RuntimeError(
+                            f"Initial frame probe failed for {cam_type} camera {cam_id} "
+                            f"with {attempt['name']}"
+                        )
+                    return {"instance": instance, "meta": cam_meta}
+                except Exception as e:
+                    last_error = e
+                    logger.warning(
+                        f"Failed to connect or configure {cam_type} camera {cam_id} "
+                        f"with {attempt['name']}: {e}"
+                    )
+                    if instance and instance.is_connected:
+                        instance.disconnect()
+                    instance = None
+
+            logger.error(
+                f"Failed to connect or configure {cam_type} camera {cam_id} after "
+                f"{len(connect_attempts)} attempts: {last_error}"
             )
-            instance = OpenCVCamera(cv_config)
+            return None
         elif cam_type == "RealSense":
             rs_config = RealSenseCameraConfig(
                 serial_number_or_name=cam_id,
@@ -199,7 +250,23 @@ def process_camera_image(
     cam_id_str = str(meta.get("id", "unknown"))
 
     try:
-        image_data = cam.read()
+        max_read_attempts = 5 if cam_type_str == "OpenCV" else 1
+        image_data = None
+        for attempt in range(1, max_read_attempts + 1):
+            try:
+                image_data = cam.read()
+                break
+            except RuntimeError as e:
+                if attempt == max_read_attempts:
+                    raise
+                logger.debug(
+                    f"Transient read failure from {cam_type_str} camera {cam_id_str} "
+                    f"(attempt {attempt}/{max_read_attempts}): {e}"
+                )
+                time.sleep(0.05)
+
+        if image_data is None:
+            raise RuntimeError(f"No image read from {cam_type_str} camera {cam_id_str}.")
 
         return save_image(
             image_data,

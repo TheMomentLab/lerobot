@@ -91,6 +91,32 @@ from lerobot.utils.utils import (
     inside_slurm,
 )
 
+from lerobot.robots import (  # noqa: F401
+    Robot,
+    RobotConfig,
+    bi_so_follower,
+    earthrover_mini_plus,
+    hope_jr,
+    koch_follower,
+    make_robot_from_config,
+    omx_follower,
+    reachy2,
+    so_follower,
+    unitree_g1,
+)
+from lerobot.teleoperators import (  # noqa: F401
+    Teleoperator,
+    TeleoperatorConfig,
+    bi_so_leader,
+    homunculus,
+    koch_leader,
+    make_teleoperator_from_config,
+    omx_leader,
+    reachy2_teleoperator,
+    so_leader,
+)
+from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig  # noqa: F401
+from lerobot.cameras.realsense.configuration_realsense import RealSenseCameraConfig  # noqa: F401
 
 def rollout(
     env: gym.vector.VectorEnv,

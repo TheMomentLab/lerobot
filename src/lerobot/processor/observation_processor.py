@@ -123,6 +123,19 @@ class VanillaObservationProcessorStep(ObservationProcessorStep):
                 agent_pos = agent_pos.unsqueeze(0)
             processed_obs[OBS_STATE] = agent_pos
 
+        # Handle pre-mapped observation.state key (numpy array, from real-robot envs)
+        if OBS_STATE in processed_obs and isinstance(processed_obs[OBS_STATE], np.ndarray):
+            state_np = processed_obs[OBS_STATE]
+            state = torch.from_numpy(state_np).float()
+            if state.dim() == 1:
+                state = state.unsqueeze(0)
+            processed_obs[OBS_STATE] = state
+
+        # Handle pre-mapped observation.images.* keys (numpy uint8, from real-robot envs)
+        for key in list(processed_obs.keys()):
+            if key.startswith(f"{OBS_IMAGES}.") and isinstance(processed_obs[key], np.ndarray):
+                processed_obs[key] = self._process_single_image(processed_obs[key])
+
         return processed_obs
 
     def observation(self, observation):

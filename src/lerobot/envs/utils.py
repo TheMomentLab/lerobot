@@ -107,6 +107,31 @@ def preprocess_observation(observations: dict[str, np.ndarray]) -> dict[str, Ten
     if "camera_obs" in observations:
         return_observations[f"{OBS_STR}.camera_obs"] = observations["camera_obs"]
 
+    # Handle already-formatted LeRobot observations (e.g., from real robot envs that
+    # already output keys like 'observation.state' and 'observation.images.*' directly).
+    for key, value in observations.items():
+        if key in return_observations:
+            continue  # already handled by one of the branches above
+        if not key.startswith(OBS_STR + "."):
+            continue  # unknown key format, skip
+        if key.startswith(f"{OBS_IMAGES}."):
+            # Image observation: convert to channel-first float32 in [0, 1]
+            img_tensor = torch.from_numpy(value) if isinstance(value, np.ndarray) else value
+            if img_tensor.ndim == 3:
+                img_tensor = img_tensor.unsqueeze(0)
+            _, h, w, c = img_tensor.shape
+            assert c < h and c < w, f"expect channel last images, but instead got {img_tensor.shape=}"
+            assert img_tensor.dtype == torch.uint8, f"expect torch.uint8, but instead {img_tensor.dtype=}"
+            img_tensor = einops.rearrange(img_tensor, "b h w c -> b c h w").contiguous()
+            img_tensor = img_tensor.type(torch.float32) / 255
+            return_observations[key] = img_tensor
+        else:
+            # State / other scalar observation: convert to float tensor with batch dim
+            tensor = torch.from_numpy(value).float() if isinstance(value, np.ndarray) else value.float()
+            if tensor.dim() == 1:
+                tensor = tensor.unsqueeze(0)
+            return_observations[key] = tensor
+
     return return_observations
 
 

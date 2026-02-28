@@ -128,6 +128,8 @@ class RobotEnv(gym.Env):
         display_cameras: bool = False,
         reset_pose: list[float] | None = None,
         reset_time_s: float = 5.0,
+        max_episode_steps: int = 1000,
+        fps: int = 30,
     ) -> None:
         """Initialize robot environment with configuration options.
 
@@ -146,6 +148,7 @@ class RobotEnv(gym.Env):
         # Connect to the robot if not already connected.
         if not self.robot.is_connected:
             self.robot.connect()
+            time.sleep(0.5)  # allow USB-serial bus to settle before first sync_read
 
         # Episode tracking.
         self.current_step = 0
@@ -161,7 +164,9 @@ class RobotEnv(gym.Env):
 
         self._joint_names = list(self.robot.bus.motors.keys())
         self._raw_joint_positions = None
-
+        self._max_episode_steps = max_episode_steps
+        self._last_obs: dict | None = None
+        self.metadata = {"render_fps": fps}
         self._setup_spaces()
 
     def _get_observation(self) -> RobotObservation:
@@ -172,7 +177,7 @@ class RobotEnv(gym.Env):
 
         images = {key: obs_dict[key] for key in self._image_keys}
 
-        return {"agent_pos": joint_positions, "pixels": images, **raw_joint_joint_position}
+        return {OBS_STATE: joint_positions, **{f"{OBS_IMAGES}.{key}": img for key, img in images.items()}, **raw_joint_joint_position}
 
     def _setup_spaces(self) -> None:
         """Configure observation and action spaces based on robot capabilities."""
@@ -181,24 +186,21 @@ class RobotEnv(gym.Env):
         observation_spaces = {}
 
         # Define observation spaces for images and other states.
-        if current_observation is not None and "pixels" in current_observation:
-            prefix = OBS_IMAGES
-            observation_spaces = {
-                f"{prefix}.{key}": gym.spaces.Box(
-                    low=0, high=255, shape=current_observation["pixels"][key].shape, dtype=np.uint8
+        # Keys match those returned by _get_observation() so VectorEnv concatenation works.
+        for key, value in current_observation.items():
+            if key.startswith(f"{OBS_IMAGES}."):
+                observation_spaces[key] = gym.spaces.Box(
+                    low=0, high=255, shape=value.shape, dtype=np.uint8
                 )
-                for key in current_observation["pixels"]
-            }
 
-        if current_observation is not None:
-            agent_pos = current_observation["agent_pos"]
+        if OBS_STATE in current_observation:
+            agent_pos = current_observation[OBS_STATE]
             observation_spaces[OBS_STATE] = gym.spaces.Box(
                 low=0,
                 high=10,
                 shape=agent_pos.shape,
                 dtype=np.float32,
             )
-
         self.observation_space = gym.spaces.Dict(observation_spaces)
 
         # Define the action space for joint positions along with setting an intervention flag.
@@ -248,6 +250,7 @@ class RobotEnv(gym.Env):
         self.episode_data = None
         obs = self._get_observation()
         self._raw_joint_positions = {f"{key}.pos": obs[f"{key}.pos"] for key in self._joint_names}
+        self._last_obs = obs
         return obs, {TeleopEvents.IS_INTERVENTION: False}
 
     def step(self, action) -> tuple[RobotObservation, float, bool, bool, dict[str, Any]]:
@@ -257,7 +260,7 @@ class RobotEnv(gym.Env):
         self.robot.send_action(joint_targets_dict)
 
         obs = self._get_observation()
-
+        self._last_obs = obs
         self._raw_joint_positions = {f"{key}.pos": obs[f"{key}.pos"] for key in self._joint_names}
 
         if self.display_cameras:
@@ -277,18 +280,22 @@ class RobotEnv(gym.Env):
             {TeleopEvents.IS_INTERVENTION: False},
         )
 
-    def render(self) -> None:
-        """Display robot camera feeds."""
-        import cv2
-
-        current_observation = self._get_observation()
-        if current_observation is not None:
-            image_keys = [key for key in current_observation if "image" in key]
-
-            for key in image_keys:
-                cv2.imshow(key, cv2.cvtColor(current_observation[key].numpy(), cv2.COLOR_RGB2BGR))
+    def render(self) -> np.ndarray:
+        """Return camera frame for video recording; optionally display feeds."""
+        obs = self._last_obs if self._last_obs is not None else self._get_observation()
+        image_keys = [key for key in obs if key.startswith(f"{OBS_IMAGES}.")]
+        frame: np.ndarray | None = None
+        for key in image_keys:
+            img = obs[key]  # already numpy (H, W, C) uint8
+            if frame is None:
+                frame = img  # first camera returned as video frame
+            if self.display_cameras:
+                import cv2
+                cv2.imshow(key, cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
                 cv2.waitKey(1)
-
+        if frame is None:
+            frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        return frame
     def close(self) -> None:
         """Close environment and disconnect robot."""
         if self.robot.is_connected:
@@ -347,6 +354,8 @@ def make_robot_env(cfg: HILSerlRobotEnvConfig) -> tuple[gym.Env, Any]:
         use_gripper=use_gripper,
         display_cameras=display_cameras,
         reset_pose=reset_pose,
+        max_episode_steps=cfg.max_episode_steps,
+        fps=cfg.fps,
     )
 
     return env, teleop_device

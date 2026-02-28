@@ -194,6 +194,15 @@ def make_env(
             env_cls=env_cls,
         )
 
+    elif "gym_manipulator" in cfg.type:
+        # HIL-SERL real-robot / gym-hil sim environment.
+        # Uses lerobot.rl.gym_manipulator.make_robot_env — does not go through gym registry.
+        from lerobot.rl.gym_manipulator import make_robot_env
+
+        env, _ = make_robot_env(cfg)
+        vec = env_cls([lambda: env], autoreset_mode=gym.vector.AutoresetMode.SAME_STEP)
+        return {cfg.type: {0: vec}}
+
     if cfg.gym_id not in gym_registry:
         print(f"gym id '{cfg.gym_id}' not found, attempting to import '{cfg.package_name}'...")
         try:

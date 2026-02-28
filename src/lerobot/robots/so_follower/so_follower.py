@@ -69,9 +69,14 @@ class SOFollower(Robot):
 
     @property
     def _cameras_ft(self) -> dict[str, tuple]:
-        return {
-            cam: (self.config.cameras[cam].height, self.config.cameras[cam].width, 3) for cam in self.cameras
-        }
+        features = {}
+        for cam_key in self.cameras:
+            cam_conf = self.config.cameras[cam_key]
+            features[cam_key] = (cam_conf.height, cam_conf.width, 3)
+            # Add depth feature if enabled in config
+            if getattr(cam_conf, "use_depth", False):
+                features[f"{cam_key}_depth"] = (cam_conf.height, cam_conf.width, 1)
+        return features
 
     @cached_property
     def observation_features(self) -> dict[str, type | tuple]:
@@ -187,7 +192,15 @@ class SOFollower(Robot):
         # Capture images from cameras
         for cam_key, cam in self.cameras.items():
             start = time.perf_counter()
-            obs_dict[cam_key] = cam.async_read()
+            data = cam.async_read()
+            if isinstance(data, tuple):
+                color_image, depth_map = data
+                obs_dict[cam_key] = color_image
+                if depth_map is not None:
+                    obs_dict[f"{cam_key}_depth"] = depth_map
+            else:
+                obs_dict[cam_key] = data
+
             dt_ms = (time.perf_counter() - start) * 1e3
             logger.debug(f"{self} read {cam_key}: {dt_ms:.1f}ms")
 

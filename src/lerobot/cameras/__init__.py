@@ -14,4 +14,6 @@
 
 from .camera import Camera
 from .configs import CameraConfig, ColorMode, Cv2Rotation
+from .lepton.camera_lepton import LeptonCamera
+from .lepton.configuration_lepton import LeptonCameraConfig
 from .utils import make_cameras_from_configs

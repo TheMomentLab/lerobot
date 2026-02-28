@@ -250,6 +250,12 @@ class HILSerlRobotEnvConfig(EnvConfig):
     processor: HILSerlProcessorConfig = field(default_factory=HILSerlProcessorConfig)
 
     name: str = "real_robot"
+    max_episode_steps: int = 1000
+
+    @property
+    def package_name(self) -> str:
+        # type is already 'gym_manipulator'; base class would double-prefix to 'gym_gym_manipulator'
+        return "lerobot.rl.gym_manipulator"
 
     @property
     def gym_kwargs(self) -> dict:
